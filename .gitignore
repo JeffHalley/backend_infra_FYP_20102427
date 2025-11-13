@@ -1,0 +1,12 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+
+# Executables
+*.exe
