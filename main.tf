@@ -1,51 +1,61 @@
 ############################################
-# Provider
+# S3 Bucket for Knowledge Documents
 ############################################
-provider "aws" {
-  region = "eu-west-1"
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "kb_docs" {
+  bucket        = "monitoring-kb-docs-${random_id.suffix.hex}"
+  force_destroy = true # Allows terraform destroy even if files exist
 }
 
 ############################################
-# 1. IAM Role for Bedrock Agent
+# Local path to knowledge_base
 ############################################
-resource "aws_iam_role" "bedrock_agent_role" {
-  name = "bedrock-agent-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Action    = "sts:AssumeRole"
-      Principal = { Service = "bedrock.amazonaws.com" }
-    }]
-  })
+locals {
+  # Use the correct folder relative to this module
+  kb_path = abspath("${path.module}/knowledge_base")
 }
 
-# Attach AWS-managed Bedrock Full Access policy
-resource "aws_iam_role_policy_attachment" "bedrock_full_access" {
-  role       = aws_iam_role.bedrock_agent_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
-}
-
-
-
 ############################################
-# 2. Bedrock Agent
+# Upload all Markdown files, preserving folder structure
 ############################################
-
-
-resource "aws_bedrockagent_agent" "main" {
-  agent_name                  = "my-react-app-agent"
-  foundation_model            = "arn:aws:bedrock:eu-west-1:644094189739:inference-profile/eu.amazon.nova-lite-v1:0"
-  instruction                 = "You are a helpful assistant. Provide concise answers."
-  agent_resource_role_arn     = aws_iam_role.bedrock_agent_role.arn
-  idle_session_ttl_in_seconds = 600
+resource "aws_s3_object" "kb_files" {
+  for_each = fileset(local.kb_path, "**/*.md")  # Recursive glob
+  bucket   = aws_s3_bucket.kb_docs.id
+  key      = each.value                           # keeps subfolders like business/check_thresholds.md
+  source   = "${local.kb_path}/${each.value}"
 }
 
 
 
+
 ############################################
-# 3. IAM Role for Lambda
+# Lambda Function
+############################################
+resource "aws_lambda_function" "api_handler" {
+  function_name    = "bedrock-sql-api-handler"
+  filename         = data.archive_file.api_handler_zip.output_path
+  source_code_hash = data.archive_file.api_handler_zip.output_base64sha256
+
+  role   = aws_iam_role.lambda_role.arn
+  handler = "index.lambda_handler"
+  runtime = "python3.12"
+  timeout = 30
+  memory_size = 512
+
+  environment {
+    variables = {
+      MODEL_ID = "eu.amazon.nova-lite-v1:0"
+      BUCKET_NAME = aws_s3_bucket.kb_docs.id
+    }
+  }
+}
+
+
+############################################
+# IAM Role for Lambda (Updated)
 ############################################
 resource "aws_iam_role" "lambda_role" {
   name = "lambda-bedrock-invoker-role"
@@ -60,77 +70,48 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-# Allow Lambda to invoke the Bedrock Agent
-resource "aws_iam_role_policy" "lambda_bedrock_policy" {
-  name = "lambda-bedrock-policy"
+resource "aws_iam_role_policy" "lambda_combined_policy" {
+  name = "lambda-combined-policy"
   role = aws_iam_role.lambda_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "bedrock:InvokeAgent"
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          aws_s3_bucket.kb_docs.arn,
+          "${aws_s3_bucket.kb_docs.arn}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
   })
 }
+
 
 ############################################
 # 4. Lambda Packaging
 ############################################
-data "archive_file" "lambda_zip" {
+
+data "archive_file" "api_handler_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas"
-  output_path = "${path.module}/lambda_function_payload.zip"
+  output_path = "${path.module}/api_handler_lambda.zip"
 }
 
 ############################################
-# 5. Lambda Function
-############################################
-resource "aws_lambda_function" "api_handler" {
-  function_name    = "bedrock-api-handler"
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-
-  role   = aws_iam_role.lambda_role.arn
-  handler = "index.lambda_handler"
-  runtime = "python3.12"
-
-  environment {
-    variables = {
-      AGENT_ID       = aws_bedrockagent_agent.main.agent_id
-      AGENT_ALIAS_ID = "TSTALIASID" # Draft alias
-    }
-  }
-}
-
-############################################
-# 6. CloudWatch Logs (Lambda)
-############################################
-resource "aws_cloudwatch_log_group" "lambda_log_group" {
-  name              = "/aws/lambda/${aws_lambda_function.api_handler.function_name}"
-  retention_in_days = 7
-}
-
-resource "aws_iam_role_policy" "lambda_logging_policy" {
-  name = "lambda-logging-policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "logs:CreateLogStream",
-        "logs:PutLogEvents"
-      ]
-      Resource = "${aws_cloudwatch_log_group.lambda_log_group.arn}:*"
-    }]
-  })
-}
-
-############################################
-# 7. API Gateway (HTTP API)
+# 7. API Gateway (HTTP API) with CORS
 ############################################
 resource "aws_apigatewayv2_api" "http_api" {
   name          = "bedrock-gateway"
@@ -149,6 +130,7 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   integration_uri  = aws_lambda_function.api_handler.invoke_arn
 }
 
+# POST /ask route
 resource "aws_apigatewayv2_route" "post_route" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /ask"
@@ -184,8 +166,9 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
+
 ############################################
-# 9. Allow API Gateway to Invoke Lambda
+# 9. Allow API Gateway to invoke Lambda
 ############################################
 resource "aws_lambda_permission" "apigw_lambda" {
   statement_id  = "AllowExecutionFromAPIGateway"
