@@ -22,9 +22,9 @@ locals {
 # Upload all Markdown files, preserving folder structure
 ############################################
 resource "aws_s3_object" "kb_files" {
-  for_each = fileset(local.kb_path, "**/*.md")  # Recursive glob
+  for_each = fileset(local.kb_path, "**/*.md") # Recursive glob
   bucket   = aws_s3_bucket.kb_docs.id
-  key      = each.value                           # keeps subfolders like business/check_thresholds.md
+  key      = each.value # keeps subfolders like business/check_thresholds.md
   source   = "${local.kb_path}/${each.value}"
 }
 
@@ -32,37 +32,77 @@ resource "aws_s3_object" "kb_files" {
 
 
 ############################################
-# Lambda Function
+# Lambda Function - Main API Handler
 ############################################
 resource "aws_lambda_function" "api_handler" {
   function_name    = "bedrock-sql-api-handler"
   filename         = data.archive_file.api_handler_zip.output_path
   source_code_hash = data.archive_file.api_handler_zip.output_base64sha256
 
-  role   = aws_iam_role.lambda_role.arn
-  handler = "index.lambda_handler"
-  runtime = "python3.12"
-  timeout = 30
+  role        = aws_iam_role.lambda_role.arn
+  handler     = "index.lambda_handler"
+  runtime     = "python3.12"
+  timeout     = 30
   memory_size = 512
 
   vpc_config {
-  subnet_ids         = data.aws_subnets.default.ids
-  security_group_ids = [aws_security_group.lambda_sg.id]
-}
+    subnet_ids         = data.aws_subnets.default.ids
+    security_group_ids = [aws_security_group.lambda_sg.id]
+  }
 
 
   environment {
     variables = {
-      MODEL_ID = "eu.amazon.nova-lite-v1:0"
+      MODEL_ID    = "eu.amazon.nova-lite-v1:0"
       BUCKET_NAME = aws_s3_bucket.kb_docs.id
     }
   }
+
 }
 
 
 ############################################
+# Lambda Function - DB Connection
+############################################
+resource "aws_lambda_function" "db_conn" {
+  function_name    = "bedrock-sql-db-conn"
+  filename         = data.archive_file.db_conn_zip.output_path
+  source_code_hash = data.archive_file.db_conn_zip.output_base64sha256
+
+  role        = aws_iam_role.lambda_role.arn
+  handler     = "db_conn.lambda_handler"
+  runtime     = "python3.12"
+  timeout     = 30
+  memory_size = 512
+
+  vpc_config {
+    subnet_ids         = data.aws_subnets.default.ids
+    security_group_ids = [aws_security_group.lambda_sg.id]
+  }
+
+
+  environment {
+    variables = {
+      DB_HOST = aws_instance.postgres.private_ip
+      DB_NAME = "postgres"
+      DB_USER = "lambda_reader"
+      DB_PASS = "BedrockReadOnly2026!"
+    }
+  }
+
+  layers = ["arn:aws:lambda:eu-west-1:770693421928:layer:Klayers-p312-psycopg2-binary:1"]
+
+}
+
+############################################
 # IAM Role for Lambda (Updated)
 ############################################
+
+resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "lambda-bedrock-invoker-role"
 
@@ -89,12 +129,17 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
         Resource = "*"
       },
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
         Resource = [
           aws_s3_bucket.kb_docs.arn,
           "${aws_s3_bucket.kb_docs.arn}/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.db_conn.arn
       },
       {
         Effect   = "Allow"
@@ -114,6 +159,12 @@ data "archive_file" "api_handler_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas"
   output_path = "${path.module}/api_handler_lambda.zip"
+}
+
+data "archive_file" "db_conn_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/db_lambda"
+  output_path = "${path.module}/db_conn_lambda.zip"
 }
 
 ############################################
@@ -221,7 +272,7 @@ resource "aws_security_group" "postgres" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["YOUR.IP.ADDRESS/32"]
+    cidr_blocks = ["0.0.0.0/0"]  
   }
 
   # Postgres
@@ -265,7 +316,7 @@ resource "aws_instance" "postgres" {
 
   vpc_security_group_ids = [aws_security_group.postgres.id]
 
-  key_name = "placeholder"
+  key_name = "postgress_instance_keypair"
 
   user_data = <<-EOF
     #!/bin/bash
@@ -291,8 +342,8 @@ resource "aws_instance" "postgres" {
   instance_market_options {
     market_type = "spot"
     spot_options {
-      spot_instance_type               = "persistent"
-      instance_interruption_behavior   = "stop"
+      spot_instance_type             = "persistent"
+      instance_interruption_behavior = "stop"
     }
   }
 
