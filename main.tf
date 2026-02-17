@@ -7,29 +7,19 @@ resource "random_id" "suffix" {
 
 resource "aws_s3_bucket" "kb_docs" {
   bucket        = "monitoring-kb-docs-${random_id.suffix.hex}"
-  force_destroy = true # Allows terraform destroy even if files exist
+  force_destroy = true 
 }
 
-############################################
-# Local path to knowledge_base
-############################################
 locals {
-  # Use the correct folder relative to this module
   kb_path = abspath("${path.module}/knowledge_base")
 }
 
-############################################
-# Upload all Markdown files, preserving folder structure
-############################################
 resource "aws_s3_object" "kb_files" {
-  for_each = fileset(local.kb_path, "**/*.md") # Recursive glob
+  for_each = fileset(local.kb_path, "**/*.md")
   bucket   = aws_s3_bucket.kb_docs.id
-  key      = each.value # keeps subfolders like business/check_thresholds.md
+  key      = each.value 
   source   = "${local.kb_path}/${each.value}"
 }
-
-
-
 
 ############################################
 # Lambda Function - Main API Handler
@@ -50,16 +40,13 @@ resource "aws_lambda_function" "api_handler" {
     security_group_ids = [aws_security_group.lambda_sg.id]
   }
 
-
   environment {
     variables = {
       MODEL_ID    = "eu.amazon.nova-lite-v1:0"
       BUCKET_NAME = aws_s3_bucket.kb_docs.id
     }
   }
-
 }
-
 
 ############################################
 # Lambda Function - DB Connection
@@ -80,7 +67,6 @@ resource "aws_lambda_function" "db_conn" {
     security_group_ids = [aws_security_group.lambda_sg.id]
   }
 
-
   environment {
     variables = {
       DB_HOST = aws_instance.postgres.private_ip
@@ -91,13 +77,11 @@ resource "aws_lambda_function" "db_conn" {
   }
 
   layers = ["arn:aws:lambda:eu-west-1:770693421928:layer:Klayers-p312-psycopg2-binary:1"]
-
 }
 
 ############################################
-# IAM Role for Lambda (Updated)
+# IAM Role for Lambda
 ############################################
-
 resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
@@ -125,7 +109,7 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse"]
         Resource = "*"
       },
       {
@@ -150,9 +134,57 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
   })
 }
 
+############################################
+# VPC Endpoints
+############################################
+
+resource "aws_vpc_endpoint" "bedrock_runtime" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.eu-west-1.bedrock-runtime"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+
+  subnet_ids          = data.aws_subnets.default.ids
+  security_group_ids  = [aws_security_group.lambda_sg.id]
+
+  tags = { Name = "bedrock-runtime-endpoint" }
+}
+
+resource "aws_vpc_endpoint" "s3_gateway" {
+  vpc_id            = data.aws_vpc.default.id
+  service_name      = "com.amazonaws.eu-west-1.s3"
+  vpc_endpoint_type = "Gateway"
+
+  route_table_ids = [data.aws_vpc.default.main_route_table_id]
+
+  tags = { Name = "s3-gateway-endpoint" }
+}
 
 ############################################
-# 4. Lambda Packaging
+# Lambda Security Group
+############################################
+resource "aws_security_group" "lambda_sg" {
+  name        = "lambda-to-postgres-sg"
+  description = "Lambda outbound to Postgres"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    self            = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+############################################
+# Other Resources (API GW, EC2, Packaging)
 ############################################
 
 data "archive_file" "api_handler_zip" {
@@ -167,9 +199,6 @@ data "archive_file" "db_conn_zip" {
   output_path = "${path.module}/db_conn_lambda.zip"
 }
 
-############################################
-# 7. API Gateway (HTTP API) with CORS
-############################################
 resource "aws_apigatewayv2_api" "http_api" {
   name          = "bedrock-gateway"
   protocol_type = "HTTP"
@@ -187,16 +216,12 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   integration_uri  = aws_lambda_function.api_handler.invoke_arn
 }
 
-# POST /ask route
 resource "aws_apigatewayv2_route" "post_route" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /ask"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
 }
 
-############################################
-# 8. API Gateway Logs + Stage
-############################################
 resource "aws_cloudwatch_log_group" "api_gw_log_group" {
   name              = "/aws/api-gateway/${aws_apigatewayv2_api.http_api.name}"
   retention_in_days = 7
@@ -223,9 +248,6 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
-############################################
-# 9. Allow API Gateway to invoke Lambda
-############################################
 resource "aws_lambda_permission" "apigw_lambda" {
   statement_id  = "AllowExecutionFromAPIGateway"
   action        = "lambda:InvokeFunction"
@@ -233,7 +255,6 @@ resource "aws_lambda_permission" "apigw_lambda" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
-
 
 ############################################
 # data sources
@@ -260,14 +281,11 @@ data "aws_ami" "al2023_arm" {
   }
 }
 
-#Security Group: Postgres
-
 resource "aws_security_group" "postgres" {
   name        = "postgres-spot-sg"
   description = "Postgres access from Lambda"
   vpc_id      = data.aws_vpc.default.id
 
-  # TEMP SSH (remove after setup)
   ingress {
     from_port   = 22
     to_port     = 22
@@ -275,7 +293,6 @@ resource "aws_security_group" "postgres" {
     cidr_blocks = ["0.0.0.0/0"]  
   }
 
-  # Postgres
   ingress {
     from_port       = 5432
     to_port         = 5432
@@ -291,24 +308,6 @@ resource "aws_security_group" "postgres" {
   }
 }
 
-# lambda security Group
-
-resource "aws_security_group" "lambda_sg" {
-  name        = "lambda-to-postgres-sg"
-  description = "Lambda outbound to Postgres"
-  vpc_id      = data.aws_vpc.default.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-
-# ec2 spot instance
-
 resource "aws_instance" "postgres" {
   ami           = data.aws_ami.al2023_arm.id
   instance_type = "t4g.small"
@@ -321,15 +320,11 @@ resource "aws_instance" "postgres" {
   user_data = <<-EOF
     #!/bin/bash
     set -e
-
     dnf update -y
     dnf install -y postgresql16-server
-
     /usr/bin/postgresql-setup --initdb
-
     sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" /var/lib/pgsql/data/postgresql.conf
     echo "host all all 0.0.0.0/0 scram-sha-256" >> /var/lib/pgsql/data/pg_hba.conf
-
     systemctl enable postgresql
     systemctl start postgresql
   EOF
@@ -347,17 +342,13 @@ resource "aws_instance" "postgres" {
     }
   }
 
-  tags = {
-    Name = "postgres-spot"
+  lifecycle {
+    ignore_changes = [ami, user_data, instance_type]
   }
+
+  tags = { Name = "postgres-spot" }
 }
 
-
-
-
-############################################
-# Output
-############################################
 output "api_endpoint" {
   value = "${aws_apigatewayv2_api.http_api.api_endpoint}/ask"
 }
