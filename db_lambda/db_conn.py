@@ -1,7 +1,17 @@
 import os
 import psycopg2
+import json
 
 def lambda_handler(event, context):
+    # Extract the query from the event passed by the Main Lambda
+    query = event.get('query')
+    
+    if not query:
+        return {
+            'statusCode': 400,
+            'body': "No SQL query provided in event payload."
+        }
+
     try:
         conn = psycopg2.connect(
             host=os.environ['DB_HOST'],
@@ -12,33 +22,23 @@ def lambda_handler(event, context):
         )
         cur = conn.cursor()
 
-        # 1. Get a list of all user-created tables
-        cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public';
-        """)
-        tables = [row[0] for row in cur.fetchall()]
-
-        # 2. Peek into the first table found (if any exist)
-        peek_data = "No tables found."
-        if tables:
-            target_table = tables[0]
-            # Fetch the first 3 rows
-            cur.execute(f'SELECT * FROM "{target_table}" LIMIT 3;')
-            rows = cur.fetchall()
-            peek_data = f"Rows from {target_table}: {rows}"
+        # Run the AI-generated query
+        cur.execute(query)
+        
+        # Fetch results and map to column names for a cleaner JSON output
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        
+        results = []
+        for row in rows:
+            results.append(dict(zip(columns, row)))
 
         cur.close()
         conn.close()
 
         return {
             'statusCode': 200,
-            'body': {
-                "status": "Success",
-                "detected_tables": tables,
-                "data_preview": peek_data
-            }
+            'body': results
         }
 
     except Exception as e:

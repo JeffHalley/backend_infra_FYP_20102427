@@ -160,6 +160,18 @@ resource "aws_vpc_endpoint" "s3_gateway" {
   tags = { Name = "s3-gateway-endpoint" }
 }
 
+resource "aws_vpc_endpoint" "lambda" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.eu-west-1.lambda"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+
+  subnet_ids          = data.aws_subnets.default.ids
+  security_group_ids  = [aws_security_group.lambda_sg.id]
+
+  tags = { Name = "lambda-api-endpoint" }
+}
+
 ############################################
 # Lambda Security Group
 ############################################
