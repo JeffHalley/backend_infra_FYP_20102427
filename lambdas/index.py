@@ -13,6 +13,11 @@ DB_LAMBDA_NAME = "bedrock-sql-db-conn"
 
 def lambda_handler(event, context):
     print(f"DEBUG: Received event: {json.dumps(event)}")
+    # API Gateway parses the JWT and puts the data here automatically
+    user_id = event['requestContext']['authorizer']['jwt']['claims']['sub']
+    
+    # Use user_id as Partition Key for DynamoDB/Postgres queries
+    print(f"Request from User: {user_id}")
     try:
         body = json.loads(event.get('body', '{}'))
         

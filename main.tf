@@ -19,6 +19,11 @@ resource "aws_s3_object" "kb_files" {
   bucket   = aws_s3_bucket.kb_docs.id
   key      = each.value 
   source   = "${local.kb_path}/${each.value}"
+
+  lifecycle {
+      ignore_changes = [source]
+    }
+
 }
 
 ############################################
@@ -218,7 +223,8 @@ resource "aws_apigatewayv2_api" "http_api" {
   cors_configuration {
     allow_origins = ["*"]
     allow_methods = ["POST", "OPTIONS"]
-    allow_headers = ["content-type"]
+    allow_headers = ["content-type", "authorization"]
+    max_age = 300 
   }
 }
 
@@ -232,6 +238,9 @@ resource "aws_apigatewayv2_route" "post_route" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /ask"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+  
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 resource "aws_cloudwatch_log_group" "api_gw_log_group" {
@@ -361,10 +370,59 @@ resource "aws_instance" "postgres" {
   tags = { Name = "postgres-spot" }
 }
 
+
+############################################
+# Cognito User Pool
+############################################
+resource "aws_cognito_user_pool" "pool" {
+  name = "chat-user-pool"
+
+  # Allow users to sign up with email
+  username_attributes = ["email"]
+  auto_verified_attributes = ["email"]
+
+  password_policy {
+    minimum_length = 8
+  }
+}
+
+resource "aws_cognito_user_pool_client" "client" {
+  name         = "chat-app-client"
+  user_pool_id = aws_cognito_user_pool.pool.id
+  generate_secret = false
+}
+
+############################################
+# API Gateway Authorizer
+############################################
+resource "aws_apigatewayv2_authorizer" "cognito" {
+  api_id           = aws_apigatewayv2_api.http_api.id
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  name             = "cognito-auth"
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.client.id]
+    issuer   = "https://${aws_cognito_user_pool.pool.endpoint}"
+  }
+}
+
 output "api_endpoint" {
   value = "${aws_apigatewayv2_api.http_api.api_endpoint}/ask"
 }
 
 output "postgres_private_ip" {
   value = aws_instance.postgres.private_ip
+}
+
+output "cognito_user_pool_id" {
+  value = aws_cognito_user_pool.pool.id
+}
+
+output "cognito_client_id" {
+  value = aws_cognito_user_pool_client.client.id
+}
+
+output "cognito_region" {
+  value = "eu-west-1" # Or whatever region you are using
 }
