@@ -1,6 +1,8 @@
 import json
 import os
 import boto3
+from common_config import get_shared_schema
+from tenant_logic import get_tenant_context
 
 # Initialize clients
 bedrock = boto3.client("bedrock-runtime", region_name="eu-west-1")
@@ -14,7 +16,7 @@ DB_LAMBDA_NAME = "bedrock-sql-db-conn"
 def lambda_handler(event, context):
     print(f"DEBUG: Received event: {json.dumps(event)}")
     # API Gateway parses the JWT and puts the data here automatically
-    user_id = event['requestContext']['authorizer']['jwt']['claims']['sub']
+    user_id = event['requestContext']['authorizer']['claims']['sub']
     
     # Use user_id as Partition Key for DynamoDB/Postgres queries
     print(f"Request from User: {user_id}")
@@ -32,17 +34,13 @@ def lambda_handler(event, context):
                 "content": [{"text": user_prompt}]
             })
 
-        # 3. Read all markdown files from S3
-        print(f"DEBUG: Fetching schema from S3 bucket: {BUCKET_NAME}")
-        md_objects = s3.list_objects_v2(Bucket=BUCKET_NAME)
-        kb_text = ""
-
-        for obj in md_objects.get('Contents', []):
-            key = obj['Key']
-            if key.endswith('.md'):
-                file_obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
-                content = file_obj['Body'].read().decode('utf-8')
-                kb_text += f"\n\n### {key}\n{content}"
+        # 1. Get the shared data (cached globally)
+        print("DEBUG: Fetching shared schema context...")
+        kb_text = get_shared_schema()
+        
+        # 2. Get the tenant data (safe due to Isolation Mode)
+        print("DEBUG: Fetching tenant-specific context...")
+        tenant_context = get_tenant_context(user_id)
 
         # 4. Define Persona
         sql_persona = f"""

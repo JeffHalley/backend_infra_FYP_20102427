@@ -206,8 +206,23 @@ resource "aws_security_group" "lambda_sg" {
 
 data "archive_file" "api_handler_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/lambdas"
   output_path = "${path.module}/api_handler_lambda.zip"
+
+  # Main logic file
+  source {
+    content  = file("${path.module}/lambdas/index.py")
+    filename = "index.py"
+  }
+
+  source {
+    content  = file("${path.module}/lambdas/common_config.py")
+    filename = "common_config.py"
+  }
+
+  source {
+    content  = file("${path.module}/lambdas/tenant_logic.py")
+    filename = "tenant_logic.py"
+  }
 }
 
 data "archive_file" "db_conn_zip" {
