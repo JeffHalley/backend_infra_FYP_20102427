@@ -23,26 +23,26 @@ def lambda_handler(event, context):
     try:
         body = json.loads(event.get('body', '{}'))
         
-        # 1. Grab history and current prompt
+        # Extract chat history and user prompt from request
         chat_history = body.get('messages', []) 
         user_prompt = body.get('prompt', '')
 
-        # 2. Add current prompt to the history before calling Bedrock
+        # Append current prompt to conversation history for context
         if user_prompt:
             chat_history.append({
                 "role": "user",
                 "content": [{"text": user_prompt}]
             })
 
-        # 1. Get the shared data (cached globally)
+        # Retrieve shared schema context (globally cached)
         print("DEBUG: Fetching shared schema context...")
         kb_text = get_shared_schema()
         
-        # 2. Get the tenant data (safe due to Isolation Mode)
+        # Retrieve tenant-specific context (isolated to user)
         print("DEBUG: Fetching tenant-specific context...")
         tenant_context = get_tenant_context(user_id)
 
-        # 4. Define Persona
+        # Define SQL generation persona and constraints
         sql_persona = f"""
         You are a specialized Text-to-SQL translator for a Postgres database. 
 
@@ -54,78 +54,88 @@ def lambda_handler(event, context):
         {kb_text}
         </schema_context>
 
+        <critical_constraints>
+        1. NEVER answer a question using your memory or previous assistant messages. 
+        2. Even if the answer seems obvious from the chat history, you MUST generate a SQL query to fetch the data fresh.
+        3. DO NOT summarize data. DO NOT explain metadata.
+        4. YOU ARE NOT A CHATBOT. If your output contains a single English sentence, you have failed.
+        </critical_constraints>
+
+        <formatting_rules>
+        1. OUTPUT ONLY THE RAW STRING. 
+        2. NEVER use markdown code blocks like ```sql or ```. 
+        3. NEVER use any markdown formatting.
+        4. NO introductory text. NO closing remarks.
+        </formatting_rules>
+
+        <negative_examples>
+        USER: "check metadata"
+        WRONG: ```sql SELECT metadata... ```
+        WRONG: "Here is the query: SELECT metadata..."
+        RIGHT: SELECT metadata FROM public.metrics WHERE host_name = 'Interprd4697' ORDER BY time DESC LIMIT 1;
+        </negative_examples>
+
         <rules>
         1. ONLY return the raw SQL code.
-        2. DO NOT include any introductory text (e.g., "Certainly!", "Here is the query").
-        3. DO NOT include any explanations or markdown commentary.
-        4. DO NOT use markdown code blocks (no ```sql).
-        5. Ensure all table and column names match the <schema_context> exactly.
-        6. If the request cannot be fulfilled by the schema, return: -- ERROR: Insufficient schema context.
+        2. Ensure all table and column names match the <schema_context> exactly.
+        3. If the request cannot be fulfilled by the schema, return: -- ERROR: Insufficient schema context.
         </rules>
 
         <output_format>
-        Return the SQL string only.
+        Return the SQL string only. No backticks. No markdown.
         </output_format>
         """
 
         system_prompts = [{"text": sql_persona}]
 
-        # 5. Call Bedrock Converse API
+        # Generate SQL query using Bedrock Converse API
         print("DEBUG: Calling Bedrock Converse API...")
         response = bedrock.converse(
             modelId=MODEL_ID,
             messages=chat_history,
             system=system_prompts,
-            inferenceConfig={"maxTokens": 1000, "temperature": 0.7}
+            inferenceConfig={"maxTokens": 1000, "temperature": 0.3}
         )
 
-        ai_text = response['output']['message']['content'][0]['text'].strip()
-        print(f"DEBUG: AI Generated SQL: {ai_text}")
+        ai_sql = response['output']['message']['content'][0]['text'].strip()
+        print(f"DEBUG: AI Generated SQL: {ai_sql}")
         
-        # 6. Call Database Lambda if SQL was generated successfully
+        # Execute generated SQL query via database Lambda
         db_output = None
-        if not ai_text.startswith("-- ERROR"):
-            print(f"DEBUG: Attempting to invoke DB Lambda: {DB_LAMBDA_NAME}")
+        if not ai_sql.startswith("-- ERROR"):
             try:
                 db_response = lambda_client.invoke(
                     FunctionName=DB_LAMBDA_NAME,
                     InvocationType='RequestResponse',
-                    Payload=json.dumps({"query": ai_text})
+                    Payload=json.dumps({"query": ai_sql})
                 )
                 
-                # Check for FunctionError (errors inside the child lambda)
                 if 'FunctionError' in db_response:
-                    error_payload = db_response['Payload'].read().decode()
-                    print(f"ERROR: DB Lambda execution error: {error_payload}")
-                    db_output = f"Error from DB Lambda: {error_payload}"
+                    db_output = "Error executing the generated query."
                 else:
                     db_payload = json.loads(db_response['Payload'].read().decode())
-                    db_output = db_payload.get('body')
-                    print(f"DEBUG: DB Lambda success. Rows returned: {len(db_output) if isinstance(db_output, list) else 'N/A'}")
+                    db_output = db_payload.get('body', [])
             
             except Exception as invoke_e:
-                print(f"ERROR: Failed to invoke DB Lambda: {str(invoke_e)}")
-                db_output = f"Invocation failed: {str(invoke_e)}"
-        else:
-            print("DEBUG: AI returned an error/refusal, skipping DB invocation.")
+                print(f"ERROR: DB Lambda Invoke failed: {str(invoke_e)}")
+                db_output = "Database connection failed."
 
-        # 7. Add AI response to history
+
+        # Append assistant response to conversation history
         chat_history.append({
             "role": "assistant",
-            "content": [{"text": ai_text}]
+            "content": [{"text": json.dumps(db_output)}]  # Convert list/dict to string for display
         })
 
-        # 8. Return history and SQL data
+        # Return response with generated SQL and conversation history
         return {
             'statusCode': 200,
-            'headers': {
-                'Access-Control-Allow-Origin': '*',
-                'Content-Type': 'application/json'
-            },
+            'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
             'body': json.dumps({
-                'response': ai_text,
+                'response': db_output, # UI displays this
                 'db_data': db_output,
-                'history': chat_history 
+                'history': chat_history,
+                'generated_sql': ai_sql
             })
         }
 
