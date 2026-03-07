@@ -1,0 +1,70 @@
+{
+    "openapi": "3.0.1",
+    "info": {
+      "title": "PostgresQuery API",
+      "description": "API for querying data from a Postgres database",
+      "version": "1.0.0"
+    },
+    "paths": {
+      "/postgress_query": {
+        "post": {
+          "operationId": "postgress_query",
+          "description": "Execute a query on a Postgres database",
+          "requestBody": {
+            "description": "Postgres query details",
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "SQL Query"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful response with query results",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "ResultSet": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "description": "A single row of query results"
+                        },
+                        "description": "Results returned by the query"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "default": {
+              "description": "Error response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }

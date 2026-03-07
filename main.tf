@@ -7,7 +7,7 @@ resource "random_id" "suffix" {
 
 resource "aws_s3_bucket" "kb_docs" {
   bucket        = "monitoring-kb-docs-${random_id.suffix.hex}"
-  force_destroy = true 
+  force_destroy = true
 }
 
 locals {
@@ -17,12 +17,12 @@ locals {
 resource "aws_s3_object" "kb_files" {
   for_each = fileset(local.kb_path, "**/*.md")
   bucket   = aws_s3_bucket.kb_docs.id
-  key      = each.value 
+  key      = each.value
   source   = "${local.kb_path}/${each.value}"
 
   lifecycle {
-      ignore_changes = [source]
-    }
+    ignore_changes = [source]
+  }
 
 }
 
@@ -100,7 +100,7 @@ resource "aws_iam_role" "lambda_role" {
     Statement = [{
       Effect    = "Allow"
       Action    = "sts:AssumeRole"
-      Principal = { Service = "lambda.amazonaws.com" }
+      Principal = { Service = ["lambda.amazonaws.com", "bedrock.amazonaws.com"] }
     }]
   })
 }
@@ -114,7 +114,7 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse"]
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:InvokeModel"]
         Resource = "*"
       },
       {
@@ -227,8 +227,18 @@ data "archive_file" "api_handler_zip" {
 
 data "archive_file" "db_conn_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/db_lambda"
   output_path = "${path.module}/db_conn_lambda.zip"
+
+  source {
+    content  = file("${path.module}/db_lambda/db_conn.py")
+    filename = "db_conn.py"
+  }
+
+  source {
+    content  = file("${path.module}/db_lambda/utils.py")
+    filename = "utils.py"
+  }
+
 }
 
 resource "aws_apigatewayv2_api" "http_api" {
@@ -239,7 +249,7 @@ resource "aws_apigatewayv2_api" "http_api" {
     allow_origins = ["*"]
     allow_methods = ["POST", "OPTIONS"]
     allow_headers = ["content-type", "authorization"]
-    max_age = 300 
+    max_age = 300
   }
 }
 
@@ -253,7 +263,7 @@ resource "aws_apigatewayv2_route" "post_route" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /ask"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
-  
+
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
@@ -326,7 +336,7 @@ resource "aws_security_group" "postgres" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
@@ -422,6 +432,45 @@ resource "aws_apigatewayv2_authorizer" "cognito" {
   }
 }
 
+resource "aws_bedrockagent_agent" "sql_agent" {
+  agent_name              = "sql-data-agent"
+  agent_resource_role_arn = aws_iam_role.lambda_role.arn
+  foundation_model        = "eu.amazon.nova-2-lite-v1:0"
+  // "eu.anthropic.claude-3-sonnet-20240229-v1:0"
+  //eu.anthropic.claude-3-5-sonnet-20240620-v1:0
+
+  # Use templatefile to inject your prompt.txt
+  instruction = templatefile("${path.module}/prompt.txt", {
+    table_name = "public.metrics"
+  })
+
+  idle_session_ttl_in_seconds = 1800
+  prepare_agent               = true
+
+}
+
+resource "aws_bedrockagent_agent_action_group" "db_action" {
+  agent_id           = aws_bedrockagent_agent.sql_agent.agent_id
+  agent_version      = "DRAFT"
+  action_group_name  = "postgress_query_group"
+  
+  action_group_executor {
+    lambda = aws_lambda_function.db_conn.arn
+  }
+  api_schema {
+    payload = file("${path.module}/DB_Action_Group.yaml")
+  }
+}
+
+# Give Bedrock permission to call your DB Lambda
+resource "aws_lambda_permission" "allow_bedrock" {
+  statement_id  = "AllowBedrockInvocation"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.db_conn.function_name
+  principal     = "bedrock.amazonaws.com"
+  source_arn    = aws_bedrockagent_agent.sql_agent.agent_arn
+}
+
 output "api_endpoint" {
   value = "${aws_apigatewayv2_api.http_api.api_endpoint}/ask"
 }
@@ -439,5 +488,5 @@ output "cognito_client_id" {
 }
 
 output "cognito_region" {
-  value = "eu-west-1" # Or whatever region you are using
+  value = "eu-west-1" 
 }
