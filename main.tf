@@ -37,7 +37,7 @@ resource "aws_lambda_function" "api_handler" {
   role        = aws_iam_role.lambda_role.arn
   handler     = "index.lambda_handler"
   runtime     = "python3.12"
-  timeout     = 30
+  timeout     = 60
   memory_size = 512
 
   vpc_config {
@@ -114,7 +114,7 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:InvokeModel"]
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:InvokeModel", "bedrock:InvokeAgent"]
         Resource = "*"
       },
       {
@@ -129,6 +129,11 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
         Effect   = "Allow"
         Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.db_conn.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]
+        Resource = aws_dynamodb_table.conversations.arn
       },
       {
         Effect   = "Allow"
@@ -149,8 +154,8 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
 
-  subnet_ids          = data.aws_subnets.default.ids
-  security_group_ids  = [aws_security_group.lambda_sg.id]
+  subnet_ids         = data.aws_subnets.default.ids
+  security_group_ids = [aws_security_group.lambda_sg.id]
 
   tags = { Name = "bedrock-runtime-endpoint" }
 }
@@ -164,6 +169,28 @@ resource "aws_vpc_endpoint" "s3_gateway" {
 
   tags = { Name = "s3-gateway-endpoint" }
 }
+resource "aws_vpc_endpoint" "bedrock_agent_runtime" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.eu-west-1.bedrock-agent-runtime"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+
+  subnet_ids         = data.aws_subnets.default.ids
+  security_group_ids = [aws_security_group.lambda_sg.id]
+
+  tags = { Name = "bedrock-agent-runtime-endpoint" }
+
+}
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = data.aws_vpc.default.id
+  service_name      = "com.amazonaws.eu-west-1.dynamodb"
+  vpc_endpoint_type = "Gateway"
+
+  route_table_ids = [data.aws_vpc.default.main_route_table_id]
+
+  tags = { Name = "dynamodb-gateway-endpoint" }
+}
 
 resource "aws_vpc_endpoint" "lambda" {
   vpc_id              = data.aws_vpc.default.id
@@ -171,8 +198,8 @@ resource "aws_vpc_endpoint" "lambda" {
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
 
-  subnet_ids          = data.aws_subnets.default.ids
-  security_group_ids  = [aws_security_group.lambda_sg.id]
+  subnet_ids         = data.aws_subnets.default.ids
+  security_group_ids = [aws_security_group.lambda_sg.id]
 
   tags = { Name = "lambda-api-endpoint" }
 }
@@ -186,10 +213,10 @@ resource "aws_security_group" "lambda_sg" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    self            = true
+    from_port = 443
+    to_port   = 443
+    protocol  = "tcp"
+    self      = true
   }
 
   egress {
@@ -247,21 +274,40 @@ resource "aws_apigatewayv2_api" "http_api" {
 
   cors_configuration {
     allow_origins = ["*"]
-    allow_methods = ["POST", "OPTIONS"]
+    allow_methods = ["POST", "OPTIONS", "GET"]
     allow_headers = ["content-type", "authorization"]
-    max_age = 300
+    max_age       = 300
   }
 }
 
 resource "aws_apigatewayv2_integration" "lambda_integration" {
-  api_id           = aws_apigatewayv2_api.http_api.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.api_handler.invoke_arn
+  api_id                 = aws_apigatewayv2_api.http_api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.api_handler.invoke_arn
+  payload_format_version = "2.0" 
 }
 
 resource "aws_apigatewayv2_route" "post_route" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /ask"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_apigatewayv2_route" "get_route" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "GET /conversations"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_apigatewayv2_route" "post_conversations_route" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "POST /conversations"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
 
   authorization_type = "JWT"
@@ -403,7 +449,7 @@ resource "aws_cognito_user_pool" "pool" {
   name = "chat-user-pool"
 
   # Allow users to sign up with email
-  username_attributes = ["email"]
+  username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
   password_policy {
@@ -412,9 +458,35 @@ resource "aws_cognito_user_pool" "pool" {
 }
 
 resource "aws_cognito_user_pool_client" "client" {
-  name         = "chat-app-client"
-  user_pool_id = aws_cognito_user_pool.pool.id
+  name            = "chat-app-client"
+  user_pool_id    = aws_cognito_user_pool.pool.id
   generate_secret = false
+}
+
+
+
+resource "aws_dynamodb_table" "conversations" {
+  name         = "conversations"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "userId"
+  range_key    = "sessionId"
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+
+  attribute {
+    name = "sessionId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  tags = { Name = "conversations" }
 }
 
 ############################################
@@ -444,16 +516,16 @@ resource "aws_bedrockagent_agent" "sql_agent" {
     table_name = "public.metrics"
   })
 
-  idle_session_ttl_in_seconds = 1800
+  idle_session_ttl_in_seconds = 5400
   prepare_agent               = true
 
 }
 
 resource "aws_bedrockagent_agent_action_group" "db_action" {
-  agent_id           = aws_bedrockagent_agent.sql_agent.agent_id
-  agent_version      = "DRAFT"
-  action_group_name  = "postgress_query_group"
-  
+  agent_id          = aws_bedrockagent_agent.sql_agent.agent_id
+  agent_version     = "DRAFT"
+  action_group_name = "postgress_query_group"
+
   action_group_executor {
     lambda = aws_lambda_function.db_conn.arn
   }
@@ -488,5 +560,5 @@ output "cognito_client_id" {
 }
 
 output "cognito_region" {
-  value = "eu-west-1" 
+  value = "eu-west-1"
 }
