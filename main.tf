@@ -1,30 +1,3 @@
-############################################
-# S3 Bucket for Knowledge Documents
-############################################
-resource "random_id" "suffix" {
-  byte_length = 4
-}
-
-resource "aws_s3_bucket" "kb_docs" {
-  bucket        = "monitoring-kb-docs-${random_id.suffix.hex}"
-  force_destroy = true
-}
-
-locals {
-  kb_path = abspath("${path.module}/knowledge_base")
-}
-
-resource "aws_s3_object" "kb_files" {
-  for_each = fileset(local.kb_path, "**/*.md")
-  bucket   = aws_s3_bucket.kb_docs.id
-  key      = each.value
-  source   = "${local.kb_path}/${each.value}"
-
-  lifecycle {
-    ignore_changes = [source]
-  }
-
-}
 
 ############################################
 # Lambda Function - Main API Handler
@@ -113,8 +86,15 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:InvokeModel", "bedrock:InvokeAgent"]
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:Converse",
+          "bedrock:InvokeAgent",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles"
+        ]
         Resource = "*"
       },
       {
@@ -141,6 +121,80 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
         Resource = "arn:aws:logs:*:*:*"
       }
     ]
+  })
+}
+
+############################################
+# IAM Role for Bedrock Agent
+############################################
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role_policy" "bedrock_agent_policy" {
+  name = "bedrock-agent-policy"
+  role = aws_iam_role.bedrock_agent_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "BedrockInvokeFoundationModel"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:eu-west-1:*:inference-profile/eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        ]
+      },
+      # ADD THESE:
+      {
+        Sid    = "MarketplaceSubscription"
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+          "aws-marketplace:Unsubscribe"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "BedrockAgentCore"
+        Effect = "Allow"
+        Action = [
+          "bedrock:GetAgent",
+          "bedrock:GetFoundationModel",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "LambdaInvoke"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.db_conn.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "bedrock_agent_role" {
+  name = "bedrock-agent-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "bedrock.amazonaws.com" }
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
   })
 }
 
@@ -284,7 +338,7 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   api_id                 = aws_apigatewayv2_api.http_api.id
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.api_handler.invoke_arn
-  payload_format_version = "2.0" 
+  payload_format_version = "2.0"
 }
 
 resource "aws_apigatewayv2_route" "post_route" {
@@ -461,6 +515,22 @@ resource "aws_cognito_user_pool_client" "client" {
   name            = "chat-app-client"
   user_pool_id    = aws_cognito_user_pool.pool.id
   generate_secret = false
+
+  callback_urls = [
+    "http://localhost:5173",
+    "https://d3212o90xjuosc.cloudfront.net/"
+  ]
+
+  logout_urls = [
+    "http://localhost:5173",
+    "https://d3212o90xjuosc.cloudfront.net/"
+  ]
+
+  explicit_auth_flows = [
+    "ALLOW_USER_SRP_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_PASSWORD_AUTH"
+  ]
 }
 
 
@@ -506,8 +576,13 @@ resource "aws_apigatewayv2_authorizer" "cognito" {
 
 resource "aws_bedrockagent_agent" "sql_agent" {
   agent_name              = "sql-data-agent"
-  agent_resource_role_arn = aws_iam_role.lambda_role.arn
-  foundation_model        = "eu.amazon.nova-2-lite-v1:0"
+  foundation_model        = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  agent_resource_role_arn = aws_iam_role.bedrock_agent_role.arn
+  prepare_agent           = true
+  description             = "SQL agent - Sonnet 4.5"
+
+
+  //foundation_model = "eu.amazon.nova-pro-v1:0"
   // "eu.anthropic.claude-3-sonnet-20240229-v1:0"
   //eu.anthropic.claude-3-5-sonnet-20240620-v1:0
 
@@ -516,8 +591,7 @@ resource "aws_bedrockagent_agent" "sql_agent" {
     table_name = "public.metrics"
   })
 
-  idle_session_ttl_in_seconds = 5400
-  prepare_agent               = true
+  idle_session_ttl_in_seconds = 3600
 
 }
 
