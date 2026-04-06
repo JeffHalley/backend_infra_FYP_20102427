@@ -21,7 +21,6 @@ resource "aws_lambda_function" "api_handler" {
   environment {
     variables = {
       MODEL_ID    = "eu.amazon.nova-lite-v1:0"
-      BUCKET_NAME = aws_s3_bucket.kb_docs.id
     }
   }
 }
@@ -96,14 +95,6 @@ resource "aws_iam_role_policy" "lambda_combined_policy" {
           "bedrock:ListInferenceProfiles"
         ]
         Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [
-          aws_s3_bucket.kb_docs.arn,
-          "${aws_s3_bucket.kb_docs.arn}/*"
-        ]
       },
       {
         Effect   = "Allow"

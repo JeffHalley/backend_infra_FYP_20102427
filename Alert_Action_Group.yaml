@@ -1,0 +1,61 @@
+openapi: "3.0.0"
+info:
+  title: Metric Alert API
+  description: Sends email alerts when unhealthy metrics are detected
+  version: "1.0.0"
+
+paths:
+  /send_metric_alert:
+    post:
+      summary: Send an email alert for unhealthy metrics
+      description: >
+        Call this when the user confirms they want an email alert sent for one
+        or more unhealthy metrics identified in a query response. Sends a
+        formatted email summarising the affected hosts, metrics, values, and
+        the time they were recorded.
+      operationId: send_metric_alert
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - alerts
+              properties:
+                alerts:
+                  type: string
+                  description: >
+                    A JSON array string of unhealthy metric objects. Each object must include:
+                    host_name, app_name, assignment_group, metric_name, status, value and time.
+                  example: >
+                    [{"host_name":"InfraSrv4Host","app_name":"InfraSrv4","assignment_group":"NexumDevelopers",
+                    "metric_name":"cpu_load","status":"unhealthy","value":1.45,"time":"2026-04-05T19:10:00+00:00"}]
+      responses:
+        "200":
+          description: Alert email sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          description: Bad request - no alerts provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "500":
+          description: Failed to send alert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
