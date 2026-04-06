@@ -86,15 +86,6 @@ data "archive_file" "api_handler_zip" {
     filename = "index.py"
   }
 
-  source {
-    content  = file("${path.module}/lambdas/common_config.py")
-    filename = "common_config.py"
-  }
-
-  source {
-    content  = file("${path.module}/lambdas/tenant_logic.py")
-    filename = "tenant_logic.py"
-  }
 }
 
 data "archive_file" "db_conn_zip" {
