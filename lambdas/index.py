@@ -16,8 +16,8 @@ bedrock_agent_runtime = boto3.client(
 dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
 table = dynamodb.Table("conversations")
 
-AGENT_ID = "IZMAAETI1S"
-AGENT_ALIAS_ID = "2U0EGTAGKO"
+AGENT_ID = "3XKSOQIYPV"
+AGENT_ALIAS_ID = "VDBPCZNVGG"
 
 HEADERS = {
     "Access-Control-Allow-Origin": "*",
