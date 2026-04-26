@@ -1,0 +1,402 @@
+openapi: "3.0.1"
+info:
+  title: "bedrock-gateway"
+  version: "2026-04-26"
+  description: "API Gateway handling conversations and Bedrock Agent queries."
+servers:
+  - url: "https://nqwrxqgze5.execute-api.eu-west-1.amazonaws.com/{basePath}"
+    variables:
+      basePath:
+        default: ""
+
+paths:
+  /conversations:
+    get:
+      summary: "Retrieve user conversations"
+      description: "Fetches a list of conversations for a specific user from DynamoDB, sorted by lastUpdated descending."
+      parameters:
+        - in: query
+          name: userId
+          schema:
+            type: string
+            example: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+          required: true
+          description: "The ID of the user to fetch conversations for."
+      responses:
+        "200":
+          description: "A list of user conversations"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationsListResponse'
+              example:
+                conversations:
+                  - userId: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+                    sessionId: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+                    title: "Hey I need help getting insights on my servers"
+                    lastUpdated: "2026-04-26T13:42:44.045Z"
+                    messages:
+                      - role: "user"
+                        content:
+                          - text: "Hey I need help getting insights on my servers"
+                      - role: "assistant"
+                        content:
+                          - text: "I'm ready to help you query your metrics data! What would you like to know about your infrastructure or applications?"
+                      - role: "user"
+                        content:
+                          - text: "trying to get an idea whats going on with the nexumdevelopers assignment group, what servers are attached to this?"
+                      - role: "assistant"
+                        content:
+                          - text: "The NexumDevelopers assignment group is responsible for 6 servers: InfraSrv4Host, InfraSrv5Host, InfraSrv6Host, InternalBHost, WebSrvBHost, and WinAppBHost. Would you like me to check the health status or any specific metrics for these servers?"
+                  - userId: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+                    sessionId: "a27534d4-6081-70d3-54f6-168e28e1d4a7-fa9ec726-e1a6-4b76-b250-77addb6312cc"
+                    title: "check the health of all latest cpu loads for all servers."
+                    lastUpdated: "2026-04-18T18:48:42.240Z"
+                    messages:
+                      - role: "user"
+                        content:
+                          - text: "check the health of all latest cpu loads for all servers."
+                      - role: "assistant"
+                        content:
+                          - text: "I've checked the latest CPU load for all 12 servers. 9 are healthy, 3 are unhealthy: InfraSrv3Host (1.46), InfraSrv8Host (1.21), InfraSrv9Host (1.33). Would you like me to send an email alert for these unhealthy metrics?"
+        "400":
+          description: "Bad Request - userId query parameter is missing or empty"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "'userId' query parameter is required"
+        "401":
+          description: "Unauthorized - missing or invalid Authorization token"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Unauthorized"
+        "500":
+          description: "Internal Server Error"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Database error"
+      security:
+        - cognito-auth: []
+      x-amazon-apigateway-integration:
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        httpMethod: "POST"
+        uri: "arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:644094189739:function:bedrock-sql-api-handler/invocations"
+        connectionType: "INTERNET"
+
+    post:
+      summary: "Save or update a conversation"
+      description: "Saves a conversation state, including messages and metadata, to DynamoDB. userId and sessionId are required."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveConversationRequest'
+            example:
+              userId: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+              sessionId: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+              title: "Hey I need help getting insights on my servers"
+              lastUpdated: "2026-04-26T13:42:44.045Z"
+              messages:
+                - role: "user"
+                  content:
+                    - text: "Hey I need help getting insights on my servers"
+                - role: "assistant"
+                  content:
+                    - text: "I'm ready to help you query your metrics data! What would you like to know about your infrastructure or applications?"
+      responses:
+        "200":
+          description: "Conversation saved successfully"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                ok: true
+        "400":
+          description: "Bad Request - required fields missing, empty, or messages is not an array"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              example:
+                error: "Bad request"
+                details:
+                  - "'userId' is required and cannot be empty"
+                  - "'sessionId' is required and cannot be empty"
+        "401":
+          description: "Unauthorized - missing or invalid Authorization token"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Unauthorized"
+        "405":
+          description: "Method Not Allowed - only GET and POST are accepted on this path"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Method not allowed"
+        "500":
+          description: "Internal Server Error"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Database error"
+      security:
+        - cognito-auth: []
+      x-amazon-apigateway-integration:
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        httpMethod: "POST"
+        uri: "arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:644094189739:function:bedrock-sql-api-handler/invocations"
+        connectionType: "INTERNET"
+
+  /ask:
+    post:
+      summary: "Invoke Bedrock Agent"
+      description: "Sends a user prompt to the AWS Bedrock Agent and returns the generated response. Both prompt and session_id are required and must be non-empty."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+            example:
+              prompt: "any unhealthy checks in the last hour"
+              session_id: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+      responses:
+        "200":
+          description: "Successful response from Bedrock Agent"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AskResponse'
+              example:
+                response: "Yes, I found 63 unhealthy checks in the last hour. The majority are CPU load issues across multiple infrastructure servers (InfraSrv1-12), with several application ping failures on WinAppC, InternalD, WinAppB, InternalB, WebSrvB, and WinAppD. Affected teams include AetherisDevelopers, NexumDevelopers, ElyssiumDevelopers, and DynamisDevelopers. Would you like me to send an email alert for these unhealthy metrics?"
+                session_id: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+        "400":
+          description: "Bad Request - prompt or session_id is missing, empty, or the Bedrock agent rejected the input"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              example:
+                error: "Bad request"
+                details:
+                  - "'prompt' is required and cannot be empty"
+        "401":
+          description: "Unauthorized - missing or invalid Authorization token"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Unauthorized"
+        "500":
+          description: "Internal Server Error"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Internal server error"
+      security:
+        - cognito-auth: []
+      x-amazon-apigateway-integration:
+        payloadFormatVersion: "2.0"
+        type: "aws_proxy"
+        httpMethod: "POST"
+        uri: "arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:644094189739:function:bedrock-sql-api-handler/invocations"
+        connectionType: "INTERNET"
+
+components:
+  schemas:
+    MessageContentBlock:
+      type: object
+      description: "A single content block within a message."
+      properties:
+        text:
+          type: string
+          description: "The text of this content block."
+          example: "any unhealthy checks in the last hour"
+      required:
+        - text
+
+    Message:
+      type: object
+      description: "A single message in a conversation."
+      properties:
+        role:
+          type: string
+          enum:
+            - "user"
+            - "assistant"
+          description: "The author of the message."
+          example: "user"
+        content:
+          type: array
+          description: "An array of content blocks that make up the message body."
+          items:
+            $ref: '#/components/schemas/MessageContentBlock'
+      required:
+        - role
+        - content
+
+    AskRequest:
+      type: object
+      description: "Request body for invoking the Bedrock agent."
+      properties:
+        prompt:
+          type: string
+          description: "The user's input text to send to the Bedrock agent. Must be non-empty."
+          example: "any unhealthy checks in the last hour"
+        session_id:
+          type: string
+          description: "The unique identifier for the agent session. Must be non-empty."
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+      required:
+        - prompt
+        - session_id
+
+    AskResponse:
+      type: object
+      description: "Response from the Bedrock agent."
+      properties:
+        response:
+          type: string
+          description: "The full text response generated by the Bedrock agent."
+          example: "Yes, I found 63 unhealthy checks in the last hour. The majority are CPU load issues across multiple infrastructure servers."
+        session_id:
+          type: string
+          description: "The session ID used for the conversation."
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+
+    SaveConversationRequest:
+      type: object
+      description: "Request body for saving or updating a conversation."
+      properties:
+        userId:
+          type: string
+          description: "The ID of the user. Must be non-empty."
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+        sessionId:
+          type: string
+          description: "The unique session ID for this conversation. Must be non-empty."
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+        title:
+          type: string
+          description: "The title of the conversation."
+          default: "Untitled"
+          example: "CPU load for InfraSrv1"
+        messages:
+          type: array
+          description: "An array containing the message history. Must be an array if provided."
+          items:
+            $ref: '#/components/schemas/Message'
+        lastUpdated:
+          type: string
+          format: date-time
+          description: "ISO 8601 timestamp of the last update."
+          example: "2026-04-26T13:42:44.045Z"
+      required:
+        - userId
+        - sessionId
+
+    Conversation:
+      type: object
+      description: "A stored conversation record."
+      properties:
+        userId:
+          type: string
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7"
+        sessionId:
+          type: string
+          example: "a27534d4-6081-70d3-54f6-168e28e1d4a7-4d10f42f-a943-4b59-8246-598166c7d2fd"
+        title:
+          type: string
+          example: "CPU load for InfraSrv6"
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        lastUpdated:
+          type: string
+          format: date-time
+          example: "2026-04-26T13:42:44.045Z"
+
+    ConversationsListResponse:
+      type: object
+      description: "A list of conversations for a user, sorted by lastUpdated descending."
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+
+    SuccessResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ErrorResponse:
+      type: object
+      description: "A simple error response."
+      properties:
+        error:
+          type: string
+          description: "Human-readable error message."
+          example: "Internal server error"
+
+    ValidationErrorResponse:
+      type: object
+      description: "A 400 error response with a list of specific validation failures."
+      properties:
+        error:
+          type: string
+          description: "Top-level error label."
+          example: "Bad request"
+        details:
+          type: array
+          description: "A list of specific validation error messages."
+          items:
+            type: string
+          example:
+            - "'prompt' is required and cannot be empty"
+
+  securitySchemes:
+    cognito-auth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Cognito-issued JWT. Obtain a token from the Cognito user pool and pass it as: Authorization: Bearer <token>"
+
+x-amazon-apigateway-cors:
+  allowMethods:
+    - "GET"
+    - "OPTIONS"
+    - "POST"
+  allowHeaders:
+    - "authorization"
+    - "content-type"
+  maxAge: 300
+  allowCredentials: false
+  allowOrigins:
+    - "*"
+x-amazon-apigateway-importexport-version: "1.0"
