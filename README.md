@@ -1,4 +1,4 @@
-# Backend Infrastructure — FYP (20102427)
+# Backend Infrastructure - FYP (20102427)
 
 A fully serverless, AI-powered backend deployed on AWS using Terraform. Built as a Final Year Project, this system exposes a natural-language query interface over a PostgreSQL database via an AWS Bedrock Agent, secured behind Cognito authentication and an HTTP API Gateway.
 
@@ -44,9 +44,9 @@ EC2 Spot Instance (t4g.small)
 ### API Gateway (HTTP API)
 - Name: `bedrock-gateway`
 - Routes:
-  - `POST /ask` — submit a natural-language query
-  - `GET /conversations` — retrieve conversation history
-  - `POST /conversations` — create a new conversation session
+  - `POST /ask` - submit a natural-language query
+  - `GET /conversations` - retrieve conversation history
+  - `POST /conversations` - create a new conversation session
 - All routes protected by JWT authoriser (Cognito)
 - Access logs sent to CloudWatch (7-day retention)
 
@@ -59,13 +59,13 @@ EC2 Spot Instance (t4g.small)
 
 Both functions run Python 3.12, are deployed inside the default VPC, and use a shared Lambda security group.
 
-### Authentication — Amazon Cognito
+### Authentication - Amazon Cognito
 - User Pool: `chat-user-pool`
 - Sign-up/login via email
 - Supported auth flows: SRP, password, refresh token
 - Callback URLs configured for both local dev (`localhost:5173`) and production (CloudFront)
 
-### Database — PostgreSQL on EC2 Spot
+### Database - PostgreSQL on EC2 Spot
 - Instance type: `t4g.small` (ARM64, Amazon Linux 2023)
 - Market type: persistent spot instance
 - PostgreSQL 16 installed and configured via EC2 user data
@@ -73,7 +73,7 @@ Both functions run Python 3.12, are deployed inside the default VPC, and use a s
 - 30 GB gp3 root volume
 - Read-only Lambda user: `lambda_reader`
 
-### DynamoDB — Conversation Store
+### DynamoDB - Conversation Store
 - Table: `conversations`
 - Composite key: `userId` (hash) + `sessionId` (range)
 - Billing: pay-per-request
