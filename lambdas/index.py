@@ -1,6 +1,7 @@
 import json
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
 bedrock_agent_runtime = boto3.client(
@@ -12,7 +13,6 @@ bedrock_agent_runtime = boto3.client(
         retries={"max_attempts": 2}
     )
 )
-
 dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
 table = dynamodb.Table("conversations")
 
@@ -24,30 +24,51 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+
+def respond(status_code, body):
+    """Helper to build a consistent response."""
+    return {
+        "statusCode": status_code,
+        "headers": HEADERS,
+        "body": json.dumps(body)
+    }
+
+
 def lambda_handler(event, context):
-    # HTTP API v2 uses rawPath, REST API v1 uses path
     path = event.get("rawPath") or event.get("path", "")
-    ...
 
     if path == "/conversations":
         return handle_conversations(event)
     elif path == "/ask":
         return handle_ask(event)
     else:
-        return {"statusCode": 404, "headers": HEADERS, "body": json.dumps({"error": "Not found"})}
+        return respond(404, {"error": "Not found"})
 
 
 def handle_ask(event):
     try:
-        body = json.loads(event.get("body", "{}"))
-        user_prompt = body.get("prompt", "")
-        session_id = body.get("session_id", "")
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return respond(400, {"error": "Request body must be valid JSON"})
 
+    # 400 validation
+    prompt = body.get("prompt", "").strip()
+    session_id = body.get("session_id", "").strip()
+
+    errors = []
+    if not prompt:
+        errors.append("'prompt' is required and cannot be empty")
+    if not session_id:
+        errors.append("'session_id' is required and cannot be empty")
+    if errors:
+        return respond(400, {"error": "Bad request", "details": errors})
+
+    try:
         response = bedrock_agent_runtime.invoke_agent(
             agentId=AGENT_ID,
             agentAliasId=AGENT_ALIAS_ID,
             sessionId=session_id,
-            inputText=user_prompt
+            inputText=prompt
         )
 
         full_answer = ""
@@ -55,48 +76,97 @@ def handle_ask(event):
             if "chunk" in chunk:
                 full_answer += chunk["chunk"]["bytes"].decode("utf-8")
 
-        return {
-            "statusCode": 200,
-            "headers": HEADERS,
-            "body": json.dumps({"response": full_answer, "session_id": session_id})
-        }
+        return respond(200, {"response": full_answer, "session_id": session_id})
+
+    except ClientError as e:
+        # Separate Bedrock-specific errors from generic 500s
+        code = e.response["Error"]["Code"]
+        print(f"ERROR /ask ClientError [{code}]: {e}")
+        if code in ("ValidationException", "ResourceNotFoundException"):
+            return respond(400, {"error": f"Bedrock agent error: {code}"})
+        return respond(500, {"error": "Upstream service error"})
 
     except Exception as e:
-        print(f"ERROR /ask: {type(e).__name__}: {str(e)}")
-        return {"statusCode": 500, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
+        print(f"ERROR /ask: {type(e).__name__}: {e}")
+        return respond(500, {"error": "Internal server error"})
 
 
 def handle_conversations(event):
-    method = event.get("httpMethod", "GET")
+    method = event.get("requestContext", {}).get("http", {}).get("method") \
+             or event.get("httpMethod", "GET")
+
+    if method == "GET":
+        return _get_conversations(event)
+    elif method == "POST":
+        return _post_conversation(event)
+    else:
+        return respond(405, {"error": f"Method {method} not allowed"})
+
+
+def _get_conversations(event):
+    # 400 validation
+    params = event.get("queryStringParameters") or {}
+    user_id = params.get("userId", "").strip()
+    if not user_id:
+        return respond(400, {"error": "'userId' query parameter is required"})
 
     try:
-        if method == "GET":
-            user_id = event.get("queryStringParameters", {}).get("userId", "")
-            result = table.query(
-                KeyConditionExpression=Key("userId").eq(user_id)
-            )
-            items = sorted(
-                result.get("Items", []),
-                key=lambda x: x.get("lastUpdated", ""),
-                reverse=True
-            )
-            return {
-                "statusCode": 200,
-                "headers": HEADERS,
-                "body": json.dumps({"conversations": items})
-            }
+        result = table.query(
+            KeyConditionExpression=Key("userId").eq(user_id)
+        )
+        items = sorted(
+            result.get("Items", []),
+            key=lambda x: x.get("lastUpdated", ""),
+            reverse=True
+        )
+        return respond(200, {"conversations": items})
 
-        elif method == "POST":
-            body = json.loads(event.get("body", "{}"))
-            table.put_item(Item={
-                "userId": body["userId"],
-                "sessionId": body["sessionId"],
-                "title": body.get("title", "Untitled"),
-                "messages": body.get("messages", []),
-                "lastUpdated": body.get("lastUpdated", "")
-            })
-            return {"statusCode": 200, "headers": HEADERS, "body": json.dumps({"ok": True})}
+    except ClientError as e:
+        print(f"ERROR GET /conversations ClientError: {e}")
+        return respond(500, {"error": "Database error"})
 
     except Exception as e:
-        print(f"ERROR /conversations: {type(e).__name__}: {str(e)}")
-        return {"statusCode": 500, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
+        print(f"ERROR GET /conversations: {type(e).__name__}: {e}")
+        return respond(500, {"error": "Internal server error"})
+
+
+def _post_conversation(event):
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return respond(400, {"error": "Request body must be valid JSON"})
+
+    # 400 validation
+    errors = []
+    user_id = body.get("userId", "").strip()
+    session_id = body.get("sessionId", "").strip()
+
+    if not user_id:
+        errors.append("'userId' is required and cannot be empty")
+    if not session_id:
+        errors.append("'sessionId' is required and cannot be empty")
+
+    messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        errors.append("'messages' must be an array")
+
+    if errors:
+        return respond(400, {"error": "Bad request", "details": errors})
+
+    try:
+        table.put_item(Item={
+            "userId": user_id,
+            "sessionId": session_id,
+            "title": body.get("title", "Untitled"),
+            "messages": messages,
+            "lastUpdated": body.get("lastUpdated", "")
+        })
+        return respond(200, {"ok": True})
+
+    except ClientError as e:
+        print(f"ERROR POST /conversations ClientError: {e}")
+        return respond(500, {"error": "Database error"})
+
+    except Exception as e:
+        print(f"ERROR POST /conversations: {type(e).__name__}: {e}")
+        return respond(500, {"error": "Internal server error"})
