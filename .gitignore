@@ -11,3 +11,4 @@ Thumbs.db
 # Executables
 *.exe
 provider.tf
+.terraform.lock.hcl
