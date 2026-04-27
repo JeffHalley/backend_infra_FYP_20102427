@@ -17,7 +17,7 @@ dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
 table = dynamodb.Table("conversations")
 
 AGENT_ID = "3XKSOQIYPV"
-AGENT_ALIAS_ID = "VDBPCZNVGG"
+AGENT_ALIAS_ID = "KIIESLQS6U"
 
 HEADERS = {
     "Access-Control-Allow-Origin": "*",
